@@ -97,14 +97,73 @@ sudo dnf install msmtp            # Fedora
 
 ### 2. Create the config for the user your scripts run as
 
-Most scripts in these repos run as **root** (from systemd), so root needs the config: `/root/.msmtprc`. Scripts that run as a normal user need it in that user's `~/.msmtprc` instead.
+Most scripts in these repos run as **root** (from systemd), so root needs the config: `/root/.msmtprc`. Scripts that run as a normal user need it in that user's `~/.msmtprc` instead. The commands below are for root; run them from a root shell (`sudo -i`).
+
+There are two ways to give msmtp your mail password. Pick one:
+
+- **2a. Encrypted password in a separate file (recommended).** The config file holds no secret, so it's safe to back up, sync or show someone.
+- **2b. Password in plain text in the config (simpler, less secure).** Fine for a quick test, or a single-user box where nothing ever copies `/root`.
+
+Both use a Gmail example. Other providers only differ in `host` and `port`. Gmail needs an [app password](https://myaccount.google.com/apppasswords) (16 characters, requires 2-step verification), never your normal Google password.
+
+#### 2a. Encrypted password (recommended)
+
+**Step 1: create a GPG key for root.** It has no passphrase, because unattended scripts can't answer a prompt:
 
 ```bash
-sudo vi /root/.msmtprc
-sudo chmod 600 /root/.msmtprc     # msmtp refuses a config readable by others if it holds a password
+gpg --batch --passphrase '' --quick-gen-key msmtp-root default default never
 ```
 
-Example using Gmail:
+**Step 2: encrypt the app password into a file.** You'll be prompted for it; nothing is echoed or saved in shell history:
+
+```bash
+systemd-ask-password "Gmail app password:" | tr -d '\n' \
+  | gpg --encrypt --recipient msmtp-root --output /root/.msmtp-password.gpg
+chmod 600 /root/.msmtp-password.gpg
+```
+
+**Step 3: check it decrypts without a prompt**, in a stripped environment like the one systemd gives your scripts:
+
+```bash
+env -i gpg --quiet --batch --decrypt /root/.msmtp-password.gpg; echo
+```
+
+It should print your app password and nothing else. If it asks for a passphrase or errors, fix that first; msmtp will fail the same way.
+
+**Step 4: write `/root/.msmtprc`.** Note the `passwordeval` line where 2b has `password`:
+
+```
+# /root/.msmtprc
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /var/log/msmtp.log
+
+account        default
+host           smtp.gmail.com
+port           587
+from           your.sender@gmail.com
+user           your.sender@gmail.com
+passwordeval   "gpg --quiet --batch --decrypt /root/.msmtp-password.gpg"
+
+# Optional: a separate account per tool, so alerts show a clear sender name.
+# Scripts pick it with MSMTP_ACCOUNT="snapraid".
+account        snapraid : default
+from_full_name SnapRAID
+```
+
+```bash
+chmod 600 /root/.msmtprc
+```
+
+**What this does and doesn't protect.** Anyone who is already root can still decrypt the password, since the key has no passphrase. What you gain is that the password is never sitting in plain text in a config file. Copying, syncing or backing up `.msmtprc`, pasting it into a forum post, or showing it on screen doesn't expose it. Keep `/root/.gnupg` out of any backup that leaves the machine, or the key travels with the encrypted file.
+
+**To change the password later,** repeat step 2 only. The key and `.msmtprc` stay the same.
+
+#### 2b. Plain-text password (less secure)
+
+Same file, with the password written directly in it:
 
 ```
 # /root/.msmtprc
@@ -121,30 +180,24 @@ from           your.sender@gmail.com
 user           your.sender@gmail.com
 password       your-16-char-app-password
 
-# Optional: a separate account per tool, so alerts show a clear sender name.
-# Scripts pick it with MSMTP_ACCOUNT="snapraid".
 account        snapraid : default
 from_full_name SnapRAID
 ```
 
-Things that commonly go wrong:
+```bash
+chmod 600 /root/.msmtprc     # required: msmtp refuses a password file others can read
+```
 
-- **Gmail needs an [app password](https://myaccount.google.com/apppasswords)**, not your normal password. It requires 2-step verification to be on.
+Anyone who can read this file, or any copy of it, has your mail password. Don't commit it to git or a dotfile manager, and remember that backups of `/root` contain it. If it ever leaks, revoke that app password in your Google account and create a new one; your main password is unaffected.
+
+#### Things that commonly go wrong (both options)
+
 - **`from` must be a bare address.** Put a display name in `from_full_name`, never `from "Name <addr>"`; Gmail rejects the latter.
-- **Use an absolute path** for `tls_trust_file`, and for any file referenced by `passwordeval`. Some callers, such as systemd units, run with a minimal environment where `~` doesn't expand the way it does in your shell.
+- **Use absolute paths** for `tls_trust_file` and the `.gpg` file, never `~`. Some callers, such as systemd units and Proxmox's own notifications, run with a minimal environment where `~` doesn't expand the way it does in your shell.
 - **`tls_trust_file` differs by distribution:** `/etc/ssl/certs/ca-certificates.crt` on Debian/Ubuntu/Arch, `/etc/pki/tls/certs/ca-bundle.crt` on Fedora/RHEL.
+- **Wrong user's config:** a test run as yourself reads *your* `~/.msmtprc`, not root's. Test with `sudo`.
 
-### 3. Keep the password out of the file (optional, recommended)
-
-Instead of a plain `password` line, msmtp can run a command to fetch it:
-
-```
-passwordeval "gpg --quiet --decrypt /root/.msmtp-password.gpg"
-```
-
-For unattended scripts, the GPG key must be usable without a prompt. That means either a key without a passphrase that lives only in root's keyring, or a running agent. A root-only `chmod 600` file with a plain password is a reasonable tradeoff on a single-user server; just don't commit it anywhere.
-
-### 4. Test
+### 3. Test
 
 ```bash
 sudo ./notify-test.sh /etc/snapraid-toolkit.conf
