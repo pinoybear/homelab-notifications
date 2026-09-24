@@ -242,6 +242,7 @@ notify() {   # notify "Title" "Body" [priority] [tags]
 ## Repos that use this
 
 - [snapraid-mergerfs-toolkit](https://github.com/pinoybear/snapraid-mergerfs-toolkit): SnapRAID + mergerfs automation
+- [docker-toolkit](https://github.com/pinoybear/docker-toolkit): Docker Compose host backups and update checks
 
 ## License
 
